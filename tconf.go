@@ -1,6 +1,7 @@
 package tconf
 
 import (
+	"fmt"
 	"log"
 
 	"github.com/spf13/viper"
@@ -15,7 +16,7 @@ type Config struct {
 	ClusterKey              string
 }
 
-// New initialize TConf.
+// New initialize TConf
 func New(conf *Config) *TConf {
 	// First start
 	fstConfiger := newConf(conf.Path, conf.FileName, conf.Cluster)
@@ -25,44 +26,56 @@ func New(conf *Config) *TConf {
 		if err != nil {
 			log.Fatalln(err)
 		}
-		log.Println("Clusters: ", result)
 
 		defer func() {
 			fstConfiger = nil
 		}()
 
 		configer := newConf(conf.Path, conf.FileName, result.(string))
-		// configer.configer.ReadInConfig()
 		return configer
 	}
-	// fstConfiger.configer.ReadInConfig()
 	return fstConfiger
 }
 
 func newConf(path, filename, cluster string) *TConf {
 	var configer = viper.New()
+	var err error
 
 	if filename == "" {
 		panic("Filename need a value")
 	}
 	configer.SetConfigFile(filename)
 
-	if cluster != "" {
-		log.Println("Used etcd")
+	if cluster == "" {
+		err = fmt.Errorf("No cluster is set")
+	}
 
-		fetchRemoteConfig(configer, path, cluster)
+	if err == nil {
+		log.Println("Used etcd clusters: ", cluster)
+
+		err = fetchRemoteConfig(configer, path, cluster)
+	}
+	if err != nil {
+		log.Println("Used local file to config: ", filename)
+		// read local file when k/v store error occurred
+		err = configer.ReadInConfig()
+		if err != nil {
+			log.Panicln(err)
+		}
 	}
 
 	return &TConf{configer}
 }
 
-func fetchRemoteConfig(configer *viper.Viper, path, cluster string) {
+func fetchRemoteConfig(configer *viper.Viper, path, cluster string) error {
 	configer.AddRemoteProvider("etcd", cluster, path)
 	err := configer.ReadRemoteConfig()
 	if err != nil {
-		log.Fatalln("Read remote config error: ", err)
+		return err
 	}
 	configer.WriteConfig()
+
+	return nil
 }
 
 // Get value
