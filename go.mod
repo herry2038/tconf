@@ -20,8 +20,6 @@ replace (
 	golang.org/x/time => github.com/golang/time v0.0.0-20190308202827-9d24e82272b4
 	golang.org/x/tools => github.com/golang/tools v0.0.0-20190816200558-6889da9d5479
 	golang.org/x/xerrors => github.com/golang/xerrors v0.0.0-20190717185122-a985d3407aa7
-	//gopkg.in/jcmturner/gokrb5.v7 => github.com/jcmturner/gokrb5 v7.2.3+incompatible
-	//google.golang.org/api => github.com/googleapis/google-api-go-client v0.0.0-20190821000710-329ecc3c9c34
 	google.golang.org/api => github.com/googleapis/google-api-go-client v0.9.0
 	google.golang.org/appengine => github.com/golang/appengine v1.6.2-0.20190801181406-fb139bde60fa
 	google.golang.org/genproto => github.com/googleapis/go-genproto v0.0.0-20190819201941-24fa4b261c55
@@ -30,6 +28,7 @@ replace (
 )
 
 require (
-	github.com/spf13/viper v1.4.0
+	github.com/mitchellh/mapstructure v1.1.2
 	go.etcd.io/etcd v0.0.0-20190823073701-67d0c21bb04c
+	gopkg.in/yaml.v2 v2.2.2
 )

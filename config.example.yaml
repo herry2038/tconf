@@ -1,8 +1,0 @@
-cluster: 192.168.50.190:2379
-db:
-  database: ecs
-  host:
-  - localhost
-  password: google
-  port: "27017"
-  username: toven

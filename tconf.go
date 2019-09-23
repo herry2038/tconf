@@ -1,104 +1,160 @@
 package tconf
 
 import (
-	"fmt"
+	"context"
 	"log"
 
-	"github.com/spf13/viper"
+	"github.com/mitchellh/mapstructure"
+	"github.com/toventang/tconf/backends"
 )
 
 type TConf struct {
-	configer *viper.Viper
+	client             backends.Store
+	kvstore            map[string]interface{}
+	current            *Response
+	onChanged          func(*Response)
+	configFileProvider ConfigFileProvider
+	filename           string
 }
+
+// Config configurations
 type Config struct {
-	Path, FileName, Cluster string
-	Renew                   bool
-	ClusterKey              string
+	// k/v store center
+	Client backends.Store
+	// local file name.
+	FileName string
+	// config file processor
+	ConfigFileProvider ConfigFileProvider
 }
 
-// New initialize TConf
-func New(conf *Config) *TConf {
-	// First start
-	fstConfiger := newConf(conf.Path, conf.FileName, conf.Cluster)
-	if conf.Renew {
-		// get the new clusters
-		result, err := fstConfiger.Get(conf.ClusterKey)
-		if err != nil {
-			log.Fatalln(err)
-		}
+// Response represents the configurations from the k/v store center
+type Response struct {
+	Path  string
+	Value []byte
+}
 
-		defer func() {
-			fstConfiger = nil
-		}()
-
-		configer := newConf(conf.Path, conf.FileName, result.(string))
-		return configer
+// New creates a new TConf using config params
+func New(config Config) *TConf {
+	return &TConf{
+		client:             config.Client,
+		configFileProvider: config.ConfigFileProvider,
+		filename:           config.FileName,
 	}
-	return fstConfiger
 }
 
-func newConf(path, filename, cluster string) *TConf {
-	var configer = viper.New()
+// Get gets configurations for key
+func (c *TConf) Get(key string) interface{} {
+	if c.current == nil || c.configFileProvider == nil {
+		return nil
+	}
+	if c.kvstore == nil || len(c.kvstore) == 0 {
+		kvs, err := c.configFileProvider.Unmarshal(c.current.Value)
+		if err != nil {
+			c.kvstore = nil
+			return nil
+		}
+		c.kvstore = kvs
+	}
+
+	return c.kvstore[key]
+}
+
+// Fetch gets configurations for Path
+func (c *TConf) Fetch(ctx context.Context, val *Response) *TConf {
+	if c.current != nil && c.current.Value != nil {
+		val.Path = c.current.Path
+		val.Value = c.current.Value
+		return c
+	}
+	if val.Path == "" {
+		panic("path must be a string value")
+	}
+
+	var v []byte
 	var err error
-
-	if filename == "" {
-		panic("Filename need a value")
-	}
-	configer.SetConfigFile(filename)
-
-	if cluster == "" {
-		err = fmt.Errorf("No cluster is set")
-	}
-
-	if err == nil {
-		log.Println("Used etcd clusters: ", cluster)
-
-		err = fetchRemoteConfig(configer, path, cluster)
+	if c.client != nil {
+		v, err = c.client.Get(ctx, val.Path)
 	}
 	if err != nil {
-		log.Println("Used local file to config: ", filename)
-		// read local file when k/v store error occurred
-		err = configer.ReadInConfig()
-		if err != nil {
-			log.Panicln(err)
+		// as an error occured when getting the configuration from the K/V Store Center,
+		// read the configuration from the local file
+		v, err = c.configFileProvider.ReadConfig()
+	}
+
+	val.Value = v
+	c.current = val
+
+	c.saveConfig()
+
+	return c
+}
+
+func (c *TConf) saveConfig() {
+	if c.configFileProvider == nil {
+		p := &YAMLProvider{FileName: c.filename}
+		c.configFileProvider = p
+	}
+	m, err := c.configFileProvider.Unmarshal(c.current.Value)
+	if err != nil {
+		log.Fatalln("an error occured when save config to file, ", err.Error())
+	} else {
+		c.kvstore = m
+		go c.configFileProvider.WriteConfig(m)
+	}
+}
+
+func (c *TConf) WithOnConfigChanged(onChanged func(*Response)) *TConf {
+	c.onChanged = onChanged
+	return c
+}
+
+// Watch config changes
+func (c *TConf) Watch(ctx context.Context, stop chan bool) *TConf {
+	if c.client == nil {
+		return c
+	}
+	c.watch(ctx, c.current.Path, stop)
+	return c
+}
+
+func (c *TConf) watch(ctx context.Context, path string, stop chan bool) {
+	//在这里监听配置中心的修改，并实时保存到本地配置文件，同时更新缓存，以免客户端仍然使用过期的配置
+	response := c.client.Watch(ctx, path, stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case r := <-response:
+				if r.Error != nil {
+					log.Fatalln("etcd watcher error: ", r.Error)
+					continue
+				}
+				c.current.Path = path
+				c.current.Value = r.Value
+				go c.saveConfig()
+				if c.onChanged != nil {
+					go c.onChanged(&Response{
+						Path:  path,
+						Value: r.Value,
+					})
+				}
+			}
 		}
-	}
-
-	return &TConf{configer}
+	}()
 }
 
-func fetchRemoteConfig(configer *viper.Viper, path, cluster string) error {
-	configer.AddRemoteProvider("etcd", cluster, path)
-	err := configer.ReadRemoteConfig()
-	if err != nil {
-		return err
-	}
-	configer.WriteConfig()
-
-	return nil
+// UnmarshalAll decode the all configurations into a struct
+func (c *TConf) UnmarshalAll(out interface{}) error {
+	return mapstructure.Decode(c.kvstore, out)
 }
 
-// Get value
-func (c *TConf) Get(key string) (interface{}, error) {
-	return c.configer.Get(key), nil
+// UnmarshalKey decode the config of the key into a struct
+func (c *TConf) UnmarshalKey(key string, out interface{}) error {
+	return mapstructure.Decode(c.kvstore[key], out)
 }
 
-// Unmarshal unmarshals the config into a Struct. Make sure that the tags
-// on the fields of the structure are properly set.
-func (c *TConf) Unmarshal(in interface{}) {
-	c.configer.Unmarshal(in)
-}
-
-// UnmarshalKey takes a single key and unmarshals it into a Struct.
-func (c *TConf) UnmarshalKey(key string, in interface{}) {
-	c.configer.UnmarshalKey(key, in)
-}
-
-// Watch watching for remote server
-func (c *TConf) Watch() error {
-	err := c.configer.WatchRemoteConfig()
-	if err == nil {
-		c.configer.WriteConfig()
-	}
-	return err
+// Close client connection
+func (c *TConf) Close() error {
+	return c.client.Close()
 }
